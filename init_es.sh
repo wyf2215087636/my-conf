@@ -33,7 +33,7 @@ INDEX_CONFIG='{
   },
   "mappings": {
     "properties": {
-      "names" : {
+      "names": {
         "properties": {
           "name": {
             "type": "text",
@@ -74,7 +74,10 @@ INDEX_CONFIG='{
                 "analyzer": "myanmar_kytea_analyzer",
                 "search_analyzer": "myanmar_kytea_analyzer",
                 "fields": {
-                  "keyword": {"type": "keyword", "ignore_above": 256},
+                  "keyword": {
+                    "type": "keyword",
+                    "ignore_above": 256
+                  },
                   "ngram": {
                     "type": "text",
                     "analyzer": "myanmar_ngram",
@@ -86,6 +89,16 @@ INDEX_CONFIG='{
           },
           "rank": {
             "type": "integer"
+          }
+        }
+      },
+      "centroid": {
+        "properties": {
+          "coordinates": {
+            "type": "geo_point"
+          },
+          "type": {
+            "type": "keyword"
           }
         }
       }
