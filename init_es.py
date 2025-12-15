@@ -49,87 +49,100 @@ def create_index(es_url="http://elasticsearch:9200"):
         pass
     
     index_config = {
-        "settings": {
+          "settings": {
             "index.max_ngram_diff": 99,
             "index.mapping.total_fields.limit": 100000,
             "analysis": {
-                "analyzer": {
-                    "myanmar_ngram": {
-                        "type": "custom",
-                        "tokenizer": "standard",
-                        "filter": ["lowercase", "my_ngram"]
-                    }
-                },
-                "filter": {
-                    "my_ngram": {
-                        "type": "ngram",
-                        "min_gram": 4,
-                        "max_gram": 9
-                    }
+              "analyzer": {
+                "myanmar_ngram": {
+                  "type": "custom",
+                  "tokenizer": "standard",
+                  "filter": ["lowercase", "my_ngram"]
                 }
+              },
+              "filter": {
+                "my_ngram": {
+                  "type": "ngram",
+                  "min_gram": 4,
+                  "max_gram": 9
+                }
+              }
             }
-        },
-        "mappings": {
+          },
+          "mappings": {
             "properties": {
-                "names": {
-                    "properties": {
-                        "name": {
-                            "type": "text",
-                            "analyzer": "myanmar_kytea_analyzer",
-                            "search_analyzer": "myanmar_kytea_analyzer",
-                            "fields": {
-                                "ngram": {
-                                    "type": "text",
-                                    "analyzer": "myanmar_ngram",
-                                    "search_analyzer": "myanmar_ngram"
-                                }
-                            }
-                        },
-                        "name:my": {
-                            "type": "text",
-                            "analyzer": "myanmar_kytea_analyzer",
-                            "search_analyzer": "myanmar_kytea_analyzer",
-                            "fields": {
-                                "ngram": {
-                                    "type": "text",
-                                    "analyzer": "myanmar_ngram",
-                                    "search_analyzer": "myanmar_ngram"
-                                }
-                            }
-                        },
-                        "name:en": {
-                            "type": "text"
-                        }
+              "names": {
+                "properties": {
+                  "name": {
+                    "type": "text",
+                    "analyzer": "myanmar_kytea_analyzer",
+                    "search_analyzer": "myanmar_kytea_analyzer",
+                    "fields": {
+                      "ngram": {
+                        "type": "text",
+                        "analyzer": "myanmar_ngram",
+                        "search_analyzer": "myanmar_ngram"
+                      }
                     }
-                },
-                "address_parts": {
-                    "type": "nested",
-                    "properties": {
-                        "name": {
-                            "properties": {
-                                "name:my": {
-                                    "type": "text",
-                                    "analyzer": "myanmar_kytea_analyzer",
-                                    "search_analyzer": "myanmar_kytea_analyzer",
-                                    "fields": {
-                                        "keyword": {"type": "keyword", "ignore_above": 256},
-                                        "ngram": {
-                                            "type": "text",
-                                            "analyzer": "myanmar_ngram",
-                                            "search_analyzer": "myanmar_ngram"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        "rank": {
-                            "type": "integer"
-                        }
+                  },
+                  "name:my": {
+                    "type": "text",
+                    "analyzer": "myanmar_kytea_analyzer",
+                    "search_analyzer": "myanmar_kytea_analyzer",
+                    "fields": {
+                      "ngram": {
+                        "type": "text",
+                        "analyzer": "myanmar_ngram",
+                        "search_analyzer": "myanmar_ngram"
+                      }
                     }
+                  },
+                  "name:en": {
+                    "type": "text"
+                  }
                 }
+              },
+              "address_parts": {
+                "type": "nested",
+                "properties": {
+                  "name": {
+                    "properties": {
+                      "name:my": {
+                        "type": "text",
+                        "analyzer": "myanmar_kytea_analyzer",
+                        "search_analyzer": "myanmar_kytea_analyzer",
+                        "fields": {
+                          "keyword": {
+                            "type": "keyword",
+                            "ignore_above": 256
+                          },
+                          "ngram": {
+                            "type": "text",
+                            "analyzer": "myanmar_ngram",
+                            "search_analyzer": "myanmar_ngram"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "rank": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "centroid": {
+                "properties": {
+                  "coordinates": {
+                    "type": "geo_point"
+                  },
+                  "type": {
+                    "type": "keyword"
+                  }
+                }
+              }
             }
+          }
         }
-    }
     
     print("Creating/Updating address_places index...")
     response = requests.put(f"{es_url}/address_places", 
