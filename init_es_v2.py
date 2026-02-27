@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import json
 import time
 import requests
 from requests.adapters import HTTPAdapter
@@ -251,122 +250,8 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
     return False
 
 
-def create_search_templates(es_url=ES_URL):
-    # 模板1：结构化优先（Java 传入拆解字段）
-    structured_query = {
-        "query": {
-            "bool": {
-                "should": [
-                    {"match": {"address.city_my": {"query": "{{city_my}}"}}},
-                    {"match": {"address.region_my": {"query": "{{region_my}}"}}},
-                    {"match": {"address.road_my": {"query": "{{road_my}}"}}},
-                    {"term": {"address.house_number": "{{house_number}}"}},
-                    {"match": {"address.building_my": {"query": "{{building_my}}"}}},
-                ],
-                "minimum_should_match": 1,
-            }
-        },
-        "sort": [{"_score": "desc"}],
-        "size": "{{size}}",
-    }
-
-    # 模板2：全文兜底
-    fallback_query = {
-        "query": {
-            "bool": {
-                "should": [
-                    {"match": {"search.full_my": {"query": "{{keyword}}"}}},
-                    {"match": {"search.full_en": {"query": "{{keyword}}"}}},
-                    {"match": {"search.full_zh": {"query": "{{keyword}}"}}},
-                    {"match": {"names.name_my.ngram": {"query": "{{keyword}}"}}},
-                    {"match": {"names.name_en.ngram": {"query": "{{keyword}}"}}},
-                ],
-                "minimum_should_match": 1,
-            }
-        },
-        "sort": [{"_score": "desc"}],
-        "size": "{{size}}",
-    }
-
-    # 模板3：结构化 + nested 地址组件补偿
-    universal_query = {
-        "query": {
-            "bool": {
-                "should": [
-                    {
-                        "nested": {
-                            "path": "address_parts",
-                            "query": {
-                                "function_score": {
-                                    "query": {
-                                        "bool": {
-                                            "should": [
-                                                {
-                                                    "match": {
-                                                        "address_parts.name.name_my": {
-                                                            "query": "{{keyword}}"
-                                                        }
-                                                    }
-                                                },
-                                                {
-                                                    "match": {
-                                                        "address_parts.name.name:my": {
-                                                            "query": "{{keyword}}"
-                                                        }
-                                                    }
-                                                },
-                                            ],
-                                            "minimum_should_match": 1,
-                                        }
-                                    },
-                                    "functions": [
-                                        {
-                                            "script_score": {
-                                                "script": {
-                                                    "source": "Math.pow(2, doc['address_parts.rank'].value / 5.0)"
-                                                }
-                                            }
-                                        }
-                                    ],
-                                    "boost_mode": "multiply",
-                                }
-                            },
-                            "score_mode": "avg",
-                        }
-                    },
-                    {"match": {"search.full_my": {"query": "{{keyword}}"}}},
-                    {"match": {"names.name_my.ngram": {"query": "{{keyword}}"}}},
-                ],
-                "minimum_should_match": 1,
-            }
-        },
-        "sort": [{"_score": "desc"}],
-        "size": "{{size}}",
-    }
-
-    templates = [
-        ("address_structured_v2", structured_query),
-        ("address_fallback_v2", fallback_query),
-        ("address_universal_v2", universal_query),
-    ]
-
-    for name, body in templates:
-        payload = {"script": {"lang": "mustache", "source": json.dumps(body)}}
-        print(f"Creating template: {name}")
-        resp = requests.post(
-            f"{es_url}/_scripts/{name}",
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=30,
-        )
-        if resp.status_code not in (200, 201):
-            print(f"Template create failed: {name}, {resp.status_code} {resp.text}")
-            return False
-    return True
-
-
 def parse_args():
-    parser = argparse.ArgumentParser(description="Initialize Elasticsearch mapping/templates for map search.")
+    parser = argparse.ArgumentParser(description="Initialize Elasticsearch index/mapping for map search.")
     parser.add_argument("--es-url", default=ES_URL, help="Elasticsearch base url, e.g. http://localhost:9200")
     parser.add_argument("--index", default=INDEX_NAME, help="Target index name")
     parser.add_argument("--force-recreate", action="store_true", help="Delete existing index before create")
@@ -378,13 +263,11 @@ def main():
     wait_for_elasticsearch(args.es_url)
     if not create_index(args.es_url, args.index, args.force_recreate):
         return 1
-    if not create_search_templates(args.es_url):
-        return 1
     ok, reason = mapping_is_expected(args.es_url, args.index)
     if not ok:
         print(f"WARNING: mapping validation failed after create: {reason}")
         return 1
-    print("Init ES V2 done. Mapping validation passed.")
+    print("Init ES V2 done. Mapping validation passed. (_scripts are managed separately)")
     return 0
 
 
