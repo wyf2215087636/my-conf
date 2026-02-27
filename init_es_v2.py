@@ -7,7 +7,7 @@ from urllib3.util.retry import Retry
 
 
 ES_URL = "http://elasticsearch:9200"
-INDEX_NAME = "address_places_v2"
+INDEX_NAME = "address_places"
 
 
 def wait_for_elasticsearch(url=ES_URL, timeout=300):
