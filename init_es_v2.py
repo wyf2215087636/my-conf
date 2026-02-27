@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import time
 import requests
@@ -39,12 +40,60 @@ def wait_for_elasticsearch(url=ES_URL, timeout=300):
     raise RuntimeError(f"Elasticsearch not ready after {timeout}s")
 
 
-def create_index(es_url=ES_URL, index_name=INDEX_NAME):
+def get_mapping_properties(es_url=ES_URL, index_name=INDEX_NAME):
+    try:
+        resp = requests.get(f"{es_url}/{index_name}/_mapping", timeout=15)
+        if resp.status_code != 200:
+            return {}
+        root = resp.json().get(index_name, {})
+        return root.get("mappings", {}).get("properties", {})
+    except requests.exceptions.RequestException:
+        return {}
+
+
+def mapping_is_expected(es_url=ES_URL, index_name=INDEX_NAME):
+    props = get_mapping_properties(es_url, index_name)
+    if not props:
+        return False, "empty mapping"
+
+    centroid_type = props.get("centroid", {}).get("type")
+    address_parts_type = props.get("address_parts", {}).get("type")
+
+    errors = []
+    if centroid_type != "geo_point":
+        errors.append(f"centroid.type expected geo_point, got {centroid_type}")
+    if address_parts_type != "nested":
+        errors.append(f"address_parts.type expected nested, got {address_parts_type}")
+
+    if errors:
+        return False, "; ".join(errors)
+    return True, "ok"
+
+
+def delete_index(es_url=ES_URL, index_name=INDEX_NAME):
+    resp = requests.delete(f"{es_url}/{index_name}", timeout=30)
+    if resp.status_code in (200, 202, 404):
+        return True
+    print(f"Delete index failed: {resp.status_code} {resp.text}")
+    return False
+
+
+def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
     try:
         resp = requests.head(f"{es_url}/{index_name}", timeout=10)
         if resp.status_code == 200:
-            print(f"Index '{index_name}' already exists, skip create.")
-            return True
+            if force_recreate:
+                print(f"Index '{index_name}' exists, deleting because --force-recreate is enabled...")
+                if not delete_index(es_url, index_name):
+                    return False
+            else:
+                ok, reason = mapping_is_expected(es_url, index_name)
+                if ok:
+                    print(f"Index '{index_name}' already exists and mapping looks correct, skip create.")
+                    return True
+                print(f"Index '{index_name}' already exists but mapping is not expected: {reason}")
+                print("Hint: rerun with --force-recreate after stopping Logstash writers.")
+                return False
     except requests.exceptions.RequestException:
         pass
 
@@ -250,10 +299,24 @@ def create_search_templates(es_url=ES_URL):
                             "query": {
                                 "function_score": {
                                     "query": {
-                                        "match": {
-                                            "address_parts.name.name_my": {
-                                                "query": "{{keyword}}"
-                                            }
+                                        "bool": {
+                                            "should": [
+                                                {
+                                                    "match": {
+                                                        "address_parts.name.name_my": {
+                                                            "query": "{{keyword}}"
+                                                        }
+                                                    }
+                                                },
+                                                {
+                                                    "match": {
+                                                        "address_parts.name.name:my": {
+                                                            "query": "{{keyword}}"
+                                                        }
+                                                    }
+                                                },
+                                            ],
+                                            "minimum_should_match": 1,
                                         }
                                     },
                                     "functions": [
@@ -302,13 +365,26 @@ def create_search_templates(es_url=ES_URL):
     return True
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Initialize Elasticsearch mapping/templates for map search.")
+    parser.add_argument("--es-url", default=ES_URL, help="Elasticsearch base url, e.g. http://localhost:9200")
+    parser.add_argument("--index", default=INDEX_NAME, help="Target index name")
+    parser.add_argument("--force-recreate", action="store_true", help="Delete existing index before create")
+    return parser.parse_args()
+
+
 def main():
-    wait_for_elasticsearch()
-    if not create_index():
+    args = parse_args()
+    wait_for_elasticsearch(args.es_url)
+    if not create_index(args.es_url, args.index, args.force_recreate):
         return 1
-    if not create_search_templates():
+    if not create_search_templates(args.es_url):
         return 1
-    print("Init ES V2 done.")
+    ok, reason = mapping_is_expected(args.es_url, args.index)
+    if not ok:
+        print(f"WARNING: mapping validation failed after create: {reason}")
+        return 1
+    print("Init ES V2 done. Mapping validation passed.")
     return 0
 
 
