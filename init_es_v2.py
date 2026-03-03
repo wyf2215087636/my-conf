@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import argparse
 import json
 import time
@@ -58,12 +58,16 @@ def mapping_is_expected(es_url=ES_URL, index_name=INDEX_NAME):
 
     centroid_type = props.get("centroid", {}).get("type")
     address_parts_type = props.get("address_parts", {}).get("type")
+    address_props = props.get("address", {}).get("properties", {})
 
     errors = []
     if centroid_type != "geo_point":
         errors.append(f"centroid.type expected geo_point, got {centroid_type}")
     if address_parts_type != "nested":
         errors.append(f"address_parts.type expected nested, got {address_parts_type}")
+    for field in ["district_my", "township_my", "ward_my", "crossroads_my"]:
+        if field not in address_props:
+            errors.append(f"address.{field} missing")
 
     if errors:
         return False, "; ".join(errors)
@@ -196,9 +200,21 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
                         "region_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "region_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "region_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "district_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "district_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "district_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "township_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "township_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "township_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "ward_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "ward_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "ward_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "road_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "road_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "road_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "crossroads_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "crossroads_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                        "crossroads_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "building_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "building_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "building_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
@@ -252,43 +268,196 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
 
 
 def create_search_templates(es_url=ES_URL):
-    # 模板1：结构化优先（Java 传入拆解字段）
+    # Structured template: strong one-to-one matching for region/district/township/ward/street/house/poi/crossroads.
     structured_query = {
         "query": {
-            "bool": {
-                "should": [
-                    {"match": {"address.city_my": {"query": "{{city_my}}"}}},
-                    {"match": {"address.region_my": {"query": "{{region_my}}"}}},
-                    {"match": {"address.road_my": {"query": "{{road_my}}"}}},
-                    {"term": {"address.house_number": "{{house_number}}"}},
-                    {"match": {"address.building_my": {"query": "{{building_my}}"}}},
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "should": [
+                            {"term": {"address.house_number": {"value": "{{house_number}}", "boost": 12}}},
+                            {"match_phrase": {"address.road_my": {"query": "{{road_my}}", "boost": 12}}},
+                            {"match_phrase": {"address.road_en": {"query": "{{road_en}}", "boost": 10}}},
+                            {"match_phrase": {"address.crossroads_my": {"query": "{{crossroads_my}}", "boost": 12}}},
+                            {"match_phrase": {"address.crossroads_en": {"query": "{{crossroads_en}}", "boost": 10}}},
+                            {"match_phrase": {"address.building_my": {"query": "{{building_my}}", "boost": 16}}},
+                            {"match_phrase": {"address.building_en": {"query": "{{building_en}}", "boost": 13}}},
+                            {"match_phrase": {"names.name_my": {"query": "{{poi_my}}", "boost": 18}}},
+                            {"match_phrase": {"names.name_en": {"query": "{{poi_en}}", "boost": 14}}},
+                            {"match": {"address.city_my": {"query": "{{city_my}}", "boost": 2}}},
+                            {"match": {"address.city_en": {"query": "{{city_en}}", "boost": 2}}},
+                            {"match": {"address.region_my": {"query": "{{region_my}}", "boost": 3}}},
+                            {"match": {"address.region_en": {"query": "{{region_en}}", "boost": 3}}},
+                            {"term": {"address.district_my.keyword": {"value": "{{district_my}}", "boost": 11}}},
+                            {"term": {"address.township_my.keyword": {"value": "{{township_my}}", "boost": 12}}},
+                            {"term": {"address.ward_my.keyword": {"value": "{{ward_my}}", "boost": 13}}},
+                            {"term": {"address.crossroads_my.keyword": {"value": "{{crossroads_my}}", "boost": 12}}},
+                            {"match": {"address.district_my": {"query": "{{district_my}}", "boost": 8}}},
+                            {"match": {"address.district_en": {"query": "{{district_en}}", "boost": 7}}},
+                            {"match": {"address.township_my": {"query": "{{township_my}}", "boost": 9}}},
+                            {"match": {"address.township_en": {"query": "{{township_en}}", "boost": 8}}},
+                            {"match": {"address.ward_my": {"query": "{{ward_my}}", "boost": 10}}},
+                            {"match": {"address.ward_en": {"query": "{{ward_en}}", "boost": 9}}}
+                        ],
+                        "minimum_should_match": 1
+                    }
+                },
+                "functions": [
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"term": {"address.house_number": "{{house_number}}"}},
+                                    {"match_phrase": {"address.road_my": {"query": "{{road_my}}"}}}
+                                ]
+                            }
+                        },
+                        "weight": 6
+                    },
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"match_phrase": {"names.name_my": {"query": "{{poi_my}}"}}},
+                                    {"match_phrase": {"address.road_my": {"query": "{{road_my}}"}}}
+                                ]
+                            }
+                        },
+                        "weight": 8
+                    },
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"match_phrase": {"address.road_my": {"query": "{{road_my}}"}}},
+                                    {"match_phrase": {"address.crossroads_my": {"query": "{{crossroads_my}}"}}}
+                                ]
+                            }
+                        },
+                        "weight": 9
+                    },
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"match": {"address.district_my": {"query": "{{district_my}}"}}},
+                                    {"match": {"address.township_my": {"query": "{{township_my}}"}}},
+                                    {"match": {"address.ward_my": {"query": "{{ward_my}}"}}}
+                                ]
+                            }
+                        },
+                        "weight": 7
+                    }
                 ],
-                "minimum_should_match": 1,
+                "score_mode": "sum",
+                "boost_mode": "sum"
             }
         },
-        "sort": [{"_score": "desc"}],
-        "size": "{{size}}",
+        "sort": [{"_score": "desc"}, {"importance": "desc"}],
+        "size": "{{size}}"
     }
 
-    # 模板2：全文兜底
     fallback_query = {
         "query": {
             "bool": {
                 "should": [
-                    {"match": {"search.full_my": {"query": "{{keyword}}"}}},
-                    {"match": {"search.full_en": {"query": "{{keyword}}"}}},
-                    {"match": {"search.full_zh": {"query": "{{keyword}}"}}},
-                    {"match": {"names.name_my.ngram": {"query": "{{keyword}}"}}},
-                    {"match": {"names.name_en.ngram": {"query": "{{keyword}}"}}},
+                    {"match_phrase": {"search.full_my": {"query": "{{keyword}}", "boost": 8}}},
+                    {"match_phrase": {"search.full_en": {"query": "{{keyword}}", "boost": 6}}},
+                    {"match_phrase": {"search.full_zh": {"query": "{{keyword}}", "boost": 5}}},
+                    {
+                        "multi_match": {
+                            "query": "{{keyword}}",
+                            "type": "best_fields",
+                            "fields": [
+                                "search.full_my^4",
+                                "search.full_en^3",
+                                "search.full_zh^2",
+                                "names.name_my.ngram^4",
+                                "names.name_en.ngram^3",
+                                "names.name_zh.ngram^2",
+                                "names.name_my^5",
+                                "names.name_en^4",
+                                "names.name_zh^3",
+                                "address.crossroads_my^5",
+                                "address.crossroads_en^4",
+                                "address.ward_my^5",
+                                "address.township_my^4",
+                                "address.district_my^3"
+                            ]
+                        }
+                    }
                 ],
-                "minimum_should_match": 1,
+                "minimum_should_match": 1
             }
         },
-        "sort": [{"_score": "desc"}],
-        "size": "{{size}}",
+        "sort": [{"_score": "desc"}, {"importance": "desc"}],
+        "size": "{{size}}"
     }
 
-    # 模板3：结构化 + nested 地址组件补偿
+    road_only_query = {
+        "query": {
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {"match_phrase": {"address.road_my": {"query": "{{road_my}}", "boost": 10}}},
+                                        {"match_phrase": {"address.road_en": {"query": "{{road_en}}", "boost": 9}}},
+                                        {"match_phrase": {"address.crossroads_my": {"query": "{{crossroads_my}}", "boost": 10}}},
+                                        {"match_phrase": {"address.crossroads_en": {"query": "{{crossroads_en}}", "boost": 9}}},
+                                        {"match_phrase": {"search.full_my": {"query": "{{road_my}}", "boost": 8}}},
+                                        {"match_phrase": {"search.full_en": {"query": "{{road_en}}", "boost": 7}}},
+                                        {"match_phrase": {"names.name_my": {"query": "{{road_my}}", "boost": 8}}},
+                                        {"match_phrase": {"names.name_en": {"query": "{{road_en}}", "boost": 6}}}
+                                    ],
+                                    "minimum_should_match": 1
+                                }
+                            }
+                        ],
+                        "should": [
+                            {"match": {"address.city_my": {"query": "{{city_my}}", "boost": 2}}},
+                            {"match": {"address.city_en": {"query": "{{city_en}}", "boost": 2}}},
+                            {"match": {"address.region_my": {"query": "{{region_my}}", "boost": 3}}},
+                            {"match": {"address.region_en": {"query": "{{region_en}}", "boost": 3}}},
+                            {"term": {"address.district_my.keyword": {"value": "{{district_my}}", "boost": 9}}},
+                            {"term": {"address.township_my.keyword": {"value": "{{township_my}}", "boost": 10}}},
+                            {"term": {"address.ward_my.keyword": {"value": "{{ward_my}}", "boost": 11}}},
+                            {"term": {"address.crossroads_my.keyword": {"value": "{{crossroads_my}}", "boost": 10}}},
+                            {"match": {"address.district_my": {"query": "{{district_my}}", "boost": 6}}},
+                            {"match": {"address.district_en": {"query": "{{district_en}}", "boost": 5}}},
+                            {"match": {"address.township_my": {"query": "{{township_my}}", "boost": 7}}},
+                            {"match": {"address.township_en": {"query": "{{township_en}}", "boost": 6}}},
+                            {"match": {"address.ward_my": {"query": "{{ward_my}}", "boost": 8}}},
+                            {"match": {"address.ward_en": {"query": "{{ward_en}}", "boost": 7}}}
+                        ]
+                    }
+                },
+                "functions": [
+                    {
+                        "filter": {
+                            "bool": {
+                                "should": [
+                                    {"match_phrase": {"address.road_my": {"query": "{{road_my}}"}}},
+                                    {"match_phrase": {"address.road_en": {"query": "{{road_en}}"}}},
+                                    {"match_phrase": {"address.crossroads_my": {"query": "{{crossroads_my}}"}}},
+                                    {"match_phrase": {"address.crossroads_en": {"query": "{{crossroads_en}}"}}}
+                                ],
+                                "minimum_should_match": 1
+                            }
+                        },
+                        "weight": 3
+                    }
+                ],
+                "score_mode": "sum",
+                "boost_mode": "sum"
+            }
+        },
+        "sort": [{"_score": "desc"}, {"importance": "desc"}],
+        "size": "{{size}}"
+    }
+
     universal_query = {
         "query": {
             "bool": {
@@ -301,22 +470,10 @@ def create_search_templates(es_url=ES_URL):
                                     "query": {
                                         "bool": {
                                             "should": [
-                                                {
-                                                    "match": {
-                                                        "address_parts.name.name_my": {
-                                                            "query": "{{keyword}}"
-                                                        }
-                                                    }
-                                                },
-                                                {
-                                                    "match": {
-                                                        "address_parts.name.name:my": {
-                                                            "query": "{{keyword}}"
-                                                        }
-                                                    }
-                                                },
+                                                {"match": {"address_parts.name.name_my": {"query": "{{keyword}}"}}},
+                                                {"match": {"address_parts.name.name:my": {"query": "{{keyword}}"}}}
                                             ],
-                                            "minimum_should_match": 1,
+                                            "minimum_should_match": 1
                                         }
                                     },
                                     "functions": [
@@ -328,25 +485,54 @@ def create_search_templates(es_url=ES_URL):
                                             }
                                         }
                                     ],
-                                    "boost_mode": "multiply",
+                                    "boost_mode": "multiply"
                                 }
                             },
-                            "score_mode": "avg",
+                            "score_mode": "avg"
                         }
                     },
-                    {"match": {"search.full_my": {"query": "{{keyword}}"}}},
-                    {"match": {"names.name_my.ngram": {"query": "{{keyword}}"}}},
+                    {"match_phrase": {"search.full_my": {"query": "{{keyword}}", "boost": 8}}},
+                    {"match_phrase": {"search.full_en": {"query": "{{keyword}}", "boost": 6}}},
+                    {"match_phrase": {"search.full_zh": {"query": "{{keyword}}", "boost": 5}}},
+                    {
+                        "multi_match": {
+                            "query": "{{keyword}}",
+                            "type": "best_fields",
+                            "fields": [
+                                "names.name_my^6",
+                                "names.name_en^4",
+                                "names.name_zh^3",
+                                "names.name_my.ngram^4",
+                                "names.name_en.ngram^3",
+                                "names.name_zh.ngram^2",
+                                "address.road_my^5",
+                                "address.road_en^4",
+                                "address.crossroads_my^5",
+                                "address.crossroads_en^4",
+                                "address.ward_my^5",
+                                "address.township_my^4",
+                                "address.district_my^3",
+                                "address.building_my^4",
+                                "address.building_en^3",
+                                "address.city_my^2",
+                                "address.city_en^2",
+                                "address.region_my^3",
+                                "address.region_en^3"
+                            ]
+                        }
+                    }
                 ],
-                "minimum_should_match": 1,
+                "minimum_should_match": 1
             }
         },
-        "sort": [{"_score": "desc"}],
-        "size": "{{size}}",
+        "sort": [{"_score": "desc"}, {"importance": "desc"}],
+        "size": "{{size}}"
     }
 
     templates = [
         ("address_structured_v2", structured_query),
         ("address_fallback_v2", fallback_query),
+        ("address_road_only_v2", road_only_query),
         ("address_universal_v2", universal_query),
     ]
 
@@ -363,7 +549,6 @@ def create_search_templates(es_url=ES_URL):
             print(f"Template create failed: {name}, {resp.status_code} {resp.text}")
             return False
     return True
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Initialize Elasticsearch mapping/templates for map search.")
@@ -390,3 +575,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
