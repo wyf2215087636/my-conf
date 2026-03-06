@@ -1,5 +1,6 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import argparse
+import copy
 import json
 import time
 import requests
@@ -65,7 +66,7 @@ def mapping_is_expected(es_url=ES_URL, index_name=INDEX_NAME):
         errors.append(f"centroid.type expected geo_point, got {centroid_type}")
     if address_parts_type != "nested":
         errors.append(f"address_parts.type expected nested, got {address_parts_type}")
-    for field in ["district_my", "township_my", "ward_my", "crossroads_my"]:
+    for field in ["district_my", "township_my", "ward_my", "crossroads_my", "road_number", "ward_number"]:
         if field not in address_props:
             errors.append(f"address.{field} missing")
 
@@ -276,6 +277,8 @@ def create_search_templates(es_url=ES_URL):
                     "bool": {
                         "should": [
                             {"term": {"address.house_number": {"value": "{{house_number}}", "boost": 12}}},
+                            {"term": {"address.road_number": {"value": "{{road_number}}", "boost": 11}}},
+                            {"term": {"address.ward_number": {"value": "{{ward_number}}", "boost": 10}}},
                             {"match_phrase": {"address.road_my": {"query": "{{road_my}}", "boost": 12}}},
                             {"match_phrase": {"address.road_en": {"query": "{{road_en}}", "boost": 10}}},
                             {"match_phrase": {"address.crossroads_my": {"query": "{{crossroads_my}}", "boost": 12}}},
@@ -313,6 +316,23 @@ def create_search_templates(es_url=ES_URL):
                             }
                         },
                         "weight": 6
+                    },
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"term": {"address.road_number": "{{road_number}}"}},
+                                    {"bool": {
+                                        "should": [
+                                            {"match_phrase": {"address.road_my": {"query": "{{road_my}}"}}},
+                                            {"match_phrase": {"address.road_en": {"query": "{{road_en}}"}}}
+                                        ],
+                                        "minimum_should_match": 1
+                                    }}
+                                ]
+                            }
+                        },
+                        "weight": 7
                     },
                     {
                         "filter": {
@@ -356,6 +376,46 @@ def create_search_templates(es_url=ES_URL):
         "sort": [{"_score": "desc"}, {"importance": "desc"}],
         "size": "{{size}}"
     }
+
+    # Structured-exact template: when township/house_number has value, force one-to-one hit at query phase.
+    # Use minimum_should_match 0/1 switches to keep behavior dynamic without conditional mustache blocks.
+    structured_exact_query = copy.deepcopy(structured_query)
+    structured_exact_bool = structured_exact_query["query"]["function_score"]["query"]["bool"]
+    structured_exact_bool["must"] = [
+        {
+            "bool": {
+                "should": [
+                    {"term": {"address.house_number": {"value": "{{house_number}}"}}}
+                ],
+                "minimum_should_match": "{{must_house_number_msm}}"
+            }
+        },
+        {
+            "bool": {
+                "should": [
+                    {"term": {"address.township_my.keyword": {"value": "{{township_my}}"}}},
+                    {"term": {"address.township_en.keyword": {"value": "{{township_en}}"}}}
+                ],
+                "minimum_should_match": "{{must_township_msm}}"
+            }
+        },
+        {
+            "bool": {
+                "should": [
+                    {"term": {"address.road_number": {"value": "{{road_number}}"}}}
+                ],
+                "minimum_should_match": "{{must_road_number_msm}}"
+            }
+        },
+        {
+            "bool": {
+                "should": [
+                    {"term": {"address.ward_number": {"value": "{{ward_number}}"}}}
+                ],
+                "minimum_should_match": "{{must_ward_number_msm}}"
+            }
+        }
+    ]
 
     fallback_query = {
         "query": {
@@ -530,6 +590,7 @@ def create_search_templates(es_url=ES_URL):
     }
 
     templates = [
+        ("address_structured_exact_v2", structured_exact_query),
         ("address_structured_v2", structured_query),
         ("address_fallback_v2", fallback_query),
         ("address_road_only_v2", road_only_query),
