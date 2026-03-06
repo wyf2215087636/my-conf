@@ -220,6 +220,8 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
                         "building_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "building_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                         "house_number": {"type": "keyword"},
+                        "road_number": {"type": "keyword"},
+                        "ward_number": {"type": "keyword"},
                         "postcode": {"type": "keyword"},
                     }
                 },
