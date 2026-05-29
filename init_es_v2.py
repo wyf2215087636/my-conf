@@ -2,6 +2,7 @@
 import argparse
 import copy
 import json
+import os
 import time
 import requests
 from requests.adapters import HTTPAdapter
@@ -10,6 +11,14 @@ from urllib3.util.retry import Retry
 
 ES_URL = "http://elasticsearch:9200"
 INDEX_NAME = "address_places"
+ES_USERNAME = os.getenv("ES_USERNAME", "elastic")
+ES_PASSWORD = os.getenv("ES_PASSWORD", "wepozt@123")
+
+
+def es_auth():
+    if ES_USERNAME and ES_PASSWORD:
+        return (ES_USERNAME, ES_PASSWORD)
+    return None
 
 
 def wait_for_elasticsearch(url=ES_URL, timeout=300):
@@ -29,6 +38,7 @@ def wait_for_elasticsearch(url=ES_URL, timeout=300):
             resp = session.get(
                 f"{url}/_cluster/health",
                 params={"wait_for_status": "yellow", "timeout": "10s"},
+                auth=es_auth(),
                 timeout=15,
             )
             if resp.status_code == 200:
@@ -43,7 +53,7 @@ def wait_for_elasticsearch(url=ES_URL, timeout=300):
 
 def get_mapping_properties(es_url=ES_URL, index_name=INDEX_NAME):
     try:
-        resp = requests.get(f"{es_url}/{index_name}/_mapping", timeout=15)
+        resp = requests.get(f"{es_url}/{index_name}/_mapping", auth=es_auth(), timeout=15)
         if resp.status_code != 200:
             return {}
         root = resp.json().get(index_name, {})
@@ -59,6 +69,7 @@ def mapping_is_expected(es_url=ES_URL, index_name=INDEX_NAME):
 
     centroid_type = props.get("centroid", {}).get("type")
     address_parts_type = props.get("address_parts", {}).get("type")
+    nearby_roads_type = props.get("nearby_roads", {}).get("type")
     address_props = props.get("address", {}).get("properties", {})
 
     errors = []
@@ -66,6 +77,8 @@ def mapping_is_expected(es_url=ES_URL, index_name=INDEX_NAME):
         errors.append(f"centroid.type expected geo_point, got {centroid_type}")
     if address_parts_type != "nested":
         errors.append(f"address_parts.type expected nested, got {address_parts_type}")
+    if nearby_roads_type != "nested":
+        errors.append(f"nearby_roads.type expected nested, got {nearby_roads_type}")
     for field in ["district_my", "township_my", "ward_my", "crossroads_my", "road_number", "ward_number"]:
         if field not in address_props:
             errors.append(f"address.{field} missing")
@@ -76,7 +89,7 @@ def mapping_is_expected(es_url=ES_URL, index_name=INDEX_NAME):
 
 
 def delete_index(es_url=ES_URL, index_name=INDEX_NAME):
-    resp = requests.delete(f"{es_url}/{index_name}", timeout=30)
+    resp = requests.delete(f"{es_url}/{index_name}", auth=es_auth(), timeout=30)
     if resp.status_code in (200, 202, 404):
         return True
     print(f"Delete index failed: {resp.status_code} {resp.text}")
@@ -85,7 +98,7 @@ def delete_index(es_url=ES_URL, index_name=INDEX_NAME):
 
 def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
     try:
-        resp = requests.head(f"{es_url}/{index_name}", timeout=10)
+        resp = requests.head(f"{es_url}/{index_name}", auth=es_auth(), timeout=10)
         if resp.status_code == 200:
             if force_recreate:
                 print(f"Index '{index_name}' exists, deleting because --force-recreate is enabled...")
@@ -252,6 +265,40 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
                         },
                     },
                 },
+                "nearby_roads": {
+                    "type": "nested",
+                    "properties": {
+                        "road_place_id": {"type": "long"},
+                        "osm_type": {"type": "keyword"},
+                        "osm_id": {"type": "long"},
+                        "road_type": {"type": "keyword"},
+                        "distance_meters": {"type": "double"},
+                        "distance_score": {"type": "float"},
+                        "road_type_score": {"type": "float"},
+                        "road_pos": {"type": "float"},
+                        "road_angle": {"type": "float"},
+                        "road_side": {"type": "keyword"},
+                        "side_score": {"type": "float"},
+                        "nearby_house_count": {"type": "integer"},
+                        "house_count_score": {"type": "float"},
+                        "house_growth_score": {"type": "float"},
+                        "house_continuity_score": {"type": "float"},
+                        "house_line_angle": {"type": "float"},
+                        "point_line_road_angle_score": {"type": "float"},
+                        "avg_house_line_offset_m": {"type": "float"},
+                        "point_linearity_score": {"type": "float"},
+                        "manual_audit_score": {"type": "float"},
+                        "relation_score": {"type": "float"},
+                        "name": {
+                            "properties": {
+                                "name_default": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                                "name_my": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                                "name_en": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                                "name_zh": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                            }
+                        },
+                    },
+                },
             }
         },
     }
@@ -261,6 +308,7 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
         f"{es_url}/{index_name}",
         json=index_config,
         headers={"Content-Type": "application/json"},
+        auth=es_auth(),
         timeout=60,
     )
     if resp.status_code in (200, 201):
@@ -271,6 +319,27 @@ def create_index(es_url=ES_URL, index_name=INDEX_NAME, force_recreate=False):
 
 
 def create_search_templates(es_url=ES_URL):
+    def house_number_should(boosted=False):
+        if boosted:
+            return [
+                {"term": {"address.house_number": {"value": "{{house_number}}", "boost": 12}}},
+                {"term": {"search.tokens": {"value": "{{house_number}}", "boost": 11}}},
+                {"match_phrase": {"address.building_my": {"query": "{{house_number}}", "boost": 10}}},
+                {"match_phrase": {"address.building_en": {"query": "{{house_number}}", "boost": 8}}},
+                {"match_phrase": {"names.name_my": {"query": "{{house_number}}", "boost": 10}}},
+                {"match_phrase": {"names.name_default": {"query": "{{house_number}}", "boost": 9}}},
+                {"match_phrase": {"names.name_en": {"query": "{{house_number}}", "boost": 8}}},
+            ]
+        return [
+            {"term": {"address.house_number": {"value": "{{house_number}}"}}},
+            {"term": {"search.tokens": {"value": "{{house_number}}"}}},
+            {"match_phrase": {"address.building_my": {"query": "{{house_number}}"}}},
+            {"match_phrase": {"address.building_en": {"query": "{{house_number}}"}}},
+            {"match_phrase": {"names.name_my": {"query": "{{house_number}}"}}},
+            {"match_phrase": {"names.name_default": {"query": "{{house_number}}"}}},
+            {"match_phrase": {"names.name_en": {"query": "{{house_number}}"}}},
+        ]
+
     # Structured template: strong one-to-one matching for region/district/township/ward/street/house/poi/crossroads.
     structured_query = {
         "query": {
@@ -278,7 +347,7 @@ def create_search_templates(es_url=ES_URL):
                 "query": {
                     "bool": {
                         "should": [
-                            {"term": {"address.house_number": {"value": "{{house_number}}", "boost": 12}}},
+                            *house_number_should(True),
                             {"term": {"address.road_number": {"value": "{{road_number}}", "boost": 11}}},
                             {"term": {"address.ward_number": {"value": "{{ward_number}}", "boost": 10}}},
                             {"match_phrase": {"address.road_my": {"query": "{{road_my}}", "boost": 12}}},
@@ -312,7 +381,10 @@ def create_search_templates(es_url=ES_URL):
                         "filter": {
                             "bool": {
                                 "must": [
-                                    {"term": {"address.house_number": "{{house_number}}"}},
+                                    {"bool": {
+                                        "should": house_number_should(False),
+                                        "minimum_should_match": 1,
+                                    }},
                                     {"match_phrase": {"address.road_my": {"query": "{{road_my}}"}}}
                                 ]
                             }
@@ -386,9 +458,7 @@ def create_search_templates(es_url=ES_URL):
     structured_exact_bool["must"] = [
         {
             "bool": {
-                "should": [
-                    {"term": {"address.house_number": {"value": "{{house_number}}"}}}
-                ],
+                "should": house_number_should(False),
                 "minimum_should_match": "{{must_house_number_msm}}"
             }
         },
@@ -418,6 +488,167 @@ def create_search_templates(es_url=ES_URL):
             }
         }
     ]
+
+    structured_nearby_road_query = {
+        "query": {
+            "function_score": {
+                "query": {
+                    "bool": {
+                        "must": [
+                            {
+                                "nested": {
+                                    "path": "nearby_roads",
+                                    "query": {
+                                        "function_score": {
+                                            "query": {
+                                                "bool": {
+                                                    "should": [
+                                                        {"match_phrase": {"nearby_roads.name.name_my": {"query": "{{road_my}}", "boost": 12}}},
+                                                        {"match_phrase": {"nearby_roads.name.name_en": {"query": "{{road_en}}", "boost": 10}}},
+                                                        {"match_phrase": {"nearby_roads.name.name_default": {"query": "{{road_en}}", "boost": 8}}},
+                                                    ],
+                                                    "minimum_should_match": "{{must_nearby_road_msm}}",
+                                                }
+                                            },
+                                            "functions": [
+                                                {
+                                                    "gauss": {
+                                                        "nearby_roads.distance_meters": {
+                                                            "origin": 0,
+                                                            "scale": 30,
+                                                            "decay": 0.5,
+                                                        }
+                                                    }
+                                                },
+                                                {
+                                                    "field_value_factor": {
+                                                        "field": "nearby_roads.relation_score",
+                                                        "factor": 2,
+                                                        "missing": 0,
+                                                    }
+                                                }
+                                            ],
+                                            "score_mode": "sum",
+                                            "boost_mode": "sum",
+                                        }
+                                    },
+                                    "score_mode": "max",
+                                }
+                            },
+                            {
+                                "bool": {
+                                    "should": house_number_should(False),
+                                    "minimum_should_match": "{{must_house_number_msm}}",
+                                }
+                            },
+                            {
+                                "bool": {
+                                    "should": [
+                                        {"match_phrase": {"address.building_my": {"query": "{{building_my}}"}}},
+                                        {"match_phrase": {"address.building_en": {"query": "{{building_en}}"}}},
+                                        {"match_phrase": {"names.name_my": {"query": "{{poi_my}}"}}},
+                                        {"match_phrase": {"names.name_en": {"query": "{{poi_en}}"}}},
+                                    ],
+                                    "minimum_should_match": "{{must_building_msm}}",
+                                }
+                            },
+                        ],
+                        "should": [
+                            *house_number_should(True),
+                            {"match_phrase": {"address.building_my": {"query": "{{building_my}}", "boost": 16}}},
+                            {"match_phrase": {"address.building_en": {"query": "{{building_en}}", "boost": 13}}},
+                            {"match_phrase": {"names.name_my": {"query": "{{poi_my}}", "boost": 18}}},
+                            {"match_phrase": {"names.name_en": {"query": "{{poi_en}}", "boost": 14}}},
+                            {"match": {"address.city_my": {"query": "{{city_my}}", "boost": 2}}},
+                            {"match": {"address.city_en": {"query": "{{city_en}}", "boost": 2}}},
+                            {"match": {"address.region_my": {"query": "{{region_my}}", "boost": 3}}},
+                            {"match": {"address.region_en": {"query": "{{region_en}}", "boost": 3}}},
+                            {"term": {"address.district_my.keyword": {"value": "{{district_my}}", "boost": 9}}},
+                            {"term": {"address.township_my.keyword": {"value": "{{township_my}}", "boost": 10}}},
+                            {"term": {"address.ward_my.keyword": {"value": "{{ward_my}}", "boost": 11}}},
+                            {"match": {"address.district_my": {"query": "{{district_my}}", "boost": 6}}},
+                            {"match": {"address.district_en": {"query": "{{district_en}}", "boost": 5}}},
+                            {"match": {"address.township_my": {"query": "{{township_my}}", "boost": 7}}},
+                            {"match": {"address.township_en": {"query": "{{township_en}}", "boost": 6}}},
+                            {"match": {"address.ward_my": {"query": "{{ward_my}}", "boost": 8}}},
+                            {"match": {"address.ward_en": {"query": "{{ward_en}}", "boost": 7}}},
+                        ],
+                        "minimum_should_match": 0,
+                    }
+                },
+                "functions": [
+                    {
+                        "filter": {
+                            "nested": {
+                                "path": "nearby_roads",
+                                "query": {
+                                    "range": {"nearby_roads.distance_meters": {"lte": 30}}
+                                },
+                            }
+                        },
+                        "weight": 4,
+                    },
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"bool": {
+                                        "should": house_number_should(False),
+                                        "minimum_should_match": 1,
+                                    }},
+                                    {
+                                        "nested": {
+                                            "path": "nearby_roads",
+                                            "query": {
+                                                "bool": {
+                                                    "should": [
+                                                        {"match_phrase": {"nearby_roads.name.name_my": {"query": "{{road_my}}"}}},
+                                                        {"match_phrase": {"nearby_roads.name.name_en": {"query": "{{road_en}}"}}},
+                                                        {"match_phrase": {"nearby_roads.name.name_default": {"query": "{{road_en}}"}}},
+                                                    ],
+                                                    "minimum_should_match": 1,
+                                                }
+                                            },
+                                        }
+                                    },
+                                ]
+                            }
+                        },
+                        "weight": 7,
+                    },
+                    {
+                        "filter": {
+                            "bool": {
+                                "must": [
+                                    {"match_phrase": {"names.name_my": {"query": "{{poi_my}}"}}},
+                                    {
+                                        "nested": {
+                                            "path": "nearby_roads",
+                                            "query": {
+                                                "bool": {
+                                                    "should": [
+                                                        {"match_phrase": {"nearby_roads.name.name_my": {"query": "{{road_my}}"}}},
+                                                        {"match_phrase": {"nearby_roads.name.name_en": {"query": "{{road_en}}"}}},
+                                                        {"match_phrase": {"nearby_roads.name.name_default": {"query": "{{road_en}}"}}},
+                                                    ],
+                                                    "minimum_should_match": 1,
+                                                }
+                                            },
+                                        }
+                                    },
+                                ]
+                            }
+                        },
+                        "weight": 8,
+                    },
+                ],
+                "score_mode": "sum",
+                "boost_mode": "sum",
+            }
+        },
+        "sort": [{"_score": "desc"}, {"importance": "desc"}],
+        "size": "{{size}}",
+    }
 
     fallback_query = {
         "query": {
@@ -594,6 +825,7 @@ def create_search_templates(es_url=ES_URL):
     templates = [
         ("address_structured_exact_v2", structured_exact_query),
         ("address_structured_v2", structured_query),
+        ("address_structured_nearby_road_v2", structured_nearby_road_query),
         ("address_fallback_v2", fallback_query),
         ("address_road_only_v2", road_only_query),
         ("address_universal_v2", universal_query),
@@ -606,6 +838,7 @@ def create_search_templates(es_url=ES_URL):
             f"{es_url}/_scripts/{name}",
             json=payload,
             headers={"Content-Type": "application/json"},
+            auth=es_auth(),
             timeout=30,
         )
         if resp.status_code not in (200, 201):
@@ -638,4 +871,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
